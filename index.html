@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ひと声メーター</title>
+<style>
+  :root{--bg:#0b0f14;--card:#131a22;--text:#eaf2ff;--muted:#9fb3c8;--accent:#82d1ff}
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#0b0f14,#0e141b);color:var(--text);font-family:system-ui,"Noto Sans JP",sans-serif;min-height:100svh;display:flex;align-items:center;justify-content:center}
+  .wrap{width:min(820px,92vw);padding:20px}
+  .card{background:var(--card);border:1px solid #203040;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.35);padding:18px}
+  h1{margin:0 0 4px;font-weight:700;font-size:20px}
+  .muted{color:var(--muted);font-size:13px;margin-bottom:12px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}
+  button{border:none;border-radius:12px;padding:12px 14px;font-weight:600;color:#081018;background:#17324a;cursor:pointer;transition:.15s}
+  button:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(0,0,0,.35)}
+  .primary{background:var(--accent)}
+  .pill{background:#152233;color:var(--muted);padding:6px 8px;border-radius:10px;font-size:12px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:720px){.grid{grid-template-columns:1fr}}
+  .panel{background:#0e1620;border:1px dashed #203040;border-radius:12px;padding:12px}
+  .counter{font-size:42px;font-weight:800;letter-spacing:.5px}
+  .feathers{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+  .feather{width:14px;height:24px;border-radius:10px 10px 12px 12px;background:linear-gradient(180deg,#c7f1ff,#82d1ff);opacity:.5;filter:drop-shadow(0 0 6px rgba(130,209,255,.4))}
+  .feather.on{opacity:1}
+  textarea{width:100%;background:#0b1118;border:1px solid #1c2a3a;border-radius:10px;color:var(--text);padding:10px;height:70px}
+  .right{display:flex;gap:8px;justify-content:flex-end}
+  .small{font-size:12px}
+  .ok{color:#c5ffd0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>ひと声メーター</h1>
+    <div class="muted" id="subtitle"></div>
+
+    <div class="grid">
+      <div class="panel">
+        <div class="pill" id="streak">連続 0 日</div>
+        <div class="counter" id="count">0</div>
+        <div class="muted">今日は何回、ひと声を交わせたでしょう？</div>
+        <div class="row">
+          <button class="primary" data-cat="hello">こんにちは</button>
+          <button data-cat="thanks">ありがとう</button>
+          <button data-cat="other">その他</button>
+        </div>
+        <div class="muted small" id="cooldownMsg"></div>
+        <div class="feathers" id="feathers"></div>
+      </div>
+
+      <div class="panel">
+        <div class="pill">任意メモ（相手名は書かず ○○ など匿名で）</div>
+        <textarea id="note" placeholder="例）○○にドアを開けてもらって『ありがとう』と言えた"></textarea>
+        <div class="right">
+          <button id="export">CSVとして保存</button>
+          <button id="clear">今日をリセット</button>
+        </div>
+        <div class="muted small" id="status"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const DAY_LIMIT = 10;
+  const COOLDOWN_SEC = 20;
+  const FEATHER_STEPS = [3,5,8,10]; // 到達で羽が点灯
+  const storeKey = "greet_records_v1";
+
+  const elCount = document.getElementById("count");
+  const elStreak = document.getElementById("streak");
+  const elFeathers = document.getElementById("feathers");
+  const elCooldown = document.getElementById("cooldownMsg");
+  const elStatus = document.getElementById("status");
+  const subtitle = document.getElementById("subtitle");
+  const note = document.getElementById("note");
+
+  const btns = Array.from(document.querySelectorAll("button[data-cat]"));
+  const btnExport = document.getElementById("export");
+  const btnClear = document.getElementById("clear");
+
+  function todayStr(d=new Date()){
+    const tzOffset = d.getTimezoneOffset(); // ローカルでOK
+    const local = new Date(d.getTime() - tzOffset*60000);
+    return local.toISOString().slice(0,10);
+  }
+
+  function load(){
+    try{
+      const raw = JSON.parse(localStorage.getItem(storeKey) || "{}");
+      return {
+        records: raw.records || [],
+        meta: raw.meta || { streak:0, lastDay: null, todayCount:0, lastTs:0 }
+      };
+    }catch(e){ return {records:[], meta:{streak:0,lastDay:null,todayCount:0,lastTs:0}}}
+  }
+  function save(state){ localStorage.setItem(storeKey, JSON.stringify(state)); }
+
+  function startOfDay(ts){
+    const d = new Date(ts);
+    d.setHours(0,0,0,0);
+    return d.getTime();
+  }
+
+  function ensureDay(state){
+    const day = todayStr();
+    if(state.meta.lastDay !== day){
+      // 日付跨ぎ → streak更新
+      if(state.meta.lastDay){ // 既に何かの日を経験している
+        // 昨日記録があったかの判定
+        const yesterday = new Date(); yesterday.setDate(yesterday.getDate()-1);
+        const yStr = todayStr(yesterday);
+        const hadYesterday = state.records.some(r => r.day === yStr);
+        state.meta.streak = hadYesterday ? (state.meta.streak||0)+1 : 1;
+      }else{
+        state.meta.streak = 1;
+      }
+      state.meta.lastDay = day;
+      state.meta.todayCount = 0;
+      state.meta.lastTs = 0;
+    }
+  }
+
+  function render(state){
+    const day = state.meta.lastDay || todayStr();
+    const todayRecs = state.records.filter(r => r.day === day);
+    elCount.textContent = todayRecs.length.toString();
+    elStreak.textContent = `連続 ${state.meta.streak||0} 日`;
+    subtitle.textContent = `${day} の小さな挨拶`;
+    renderFeathers(todayRecs.length);
+    // クールダウン表示
+    const now = Date.now();
+    const remains = Math.max(0, (state.meta.lastTs||0) + COOLDOWN_SEC*1000 - now);
+    elCooldown.textContent = remains>0 ? `次の登録まで ${Math.ceil(remains/1000)} 秒` : "";
+  }
+
+  function renderFeathers(n){
+    elFeathers.innerHTML = "";
+    FEATHER_STEPS.forEach(step=>{
+      const f = document.createElement("div");
+      f.className = "feather" + (n>=step ? " on" : "");
+      elFeathers.appendChild(f);
+    });
+  }
+
+  function addRecord(cat, noteText){
+    const state = load();
+    ensureDay(state);
+
+    // 上限チェック
+    const day = state.meta.lastDay;
+    const todayRecs = state.records.filter(r => r.day === day);
+    if(todayRecs.length >= DAY_LIMIT){
+      setStatus(`今日は上限 ${DAY_LIMIT} 件です`, false); 
+      return;
+    }
+    // クールダウン
+    const now = Date.now();
+    if((state.meta.lastTs||0) + COOLDOWN_SEC*1000 > now){
+      const wait = Math.ceil(((state.meta.lastTs||0)+COOLDOWN_SEC*1000 - now)/1000);
+      setStatus(`少し間を空けましょう（あと ${wait} 秒）`, false);
+      return;
+    }
+    // 記録
+    state.records.push({
+      ts: now,
+      day,
+      cat,
+      note: (noteText||"").slice(0,80) // 任意・短文
+    });
+    state.meta.todayCount = (state.meta.todayCount||0) + 1;
+    state.meta.lastTs = now;
+    save(state);
+    note.value = "";
+    setStatus("記録しました。", true);
+    render(state);
+  }
+
+  function setStatus(msg, ok){
+    elStatus.textContent = msg;
+    elStatus.className = ok ? "muted small ok" : "muted small";
+    setTimeout(()=>{ elStatus.textContent=""; }, 2500);
+  }
+
+  function exportCSV(){
+    const {records} = load();
+    if(records.length===0){ setStatus("まだ記録がありません。", false); return; }
+    const header = ["date","time","category","note"];
+    const rows = records.map(r=>{
+      const d = new Date(r.ts);
+      const date = todayStr(d);
+      const time = d.toTimeString().slice(0,8);
+      return [date,time,r.cat,(r.note||"").replace(/"/g,'""')];
+    });
+    const csv = [header].concat(rows).map(cols=>cols.map(c=>`"${c}"`).join(",")).join("\n");
+    const blob = new Blob([csv],{type:"text/csv;charset=utf-8;"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "hito_koe_records.csv"; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function clearToday(){
+    const state = load();
+    const day = state.meta.lastDay || todayStr();
+    state.records = state.records.filter(r => r.day !== day);
+    state.meta.todayCount = 0;
+    state.meta.lastTs = 0;
+    save(state);
+    render(state);
+    setStatus("今日の記録を消去しました。", true);
+  }
+
+  // events
+  btns.forEach(b=>{
+    b.addEventListener("click", ()=>{
+      addRecord(b.dataset.cat, note.value.trim());
+    });
+  });
+  btnExport.addEventListener("click", exportCSV);
+  btnClear.addEventListener("click", clearToday);
+
+  // init
+  const state = load();
+  ensureDay(state);
+  save(state);
+  render(state);
+})();
+</script>
+</body>
+</html>
